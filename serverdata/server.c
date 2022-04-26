@@ -18,10 +18,14 @@ SYNOPSIS:
 #include <openssl/err.h>
 
 #define BUFFER_SIZE       256
+#define PATH_LENGTH       256   //added
 #define DEFAULT_PORT      4433
 #define CERTIFICATE_FILE  "cert.pem"
 #define KEY_FILE          "key.pem"
 
+#define ERR_TOO_FEW_ARGS  1     //added
+#define ERR_TOO_MANY_ARGS 2     //added
+#define ERR_INVALID_OP    3     //added
 /******************************************************************************
 
 This function does the basic necessary housekeeping to establish TCP connections
@@ -192,6 +196,8 @@ int main(int argc, char **argv)
     unsigned int sockfd;
     unsigned int port;
     char         buffer[BUFFER_SIZE];
+    char         filename[PATH_LENGTH];       //added
+    char         extra[PATH_LENGTH];          //added
 
     // Initialize and create SSL data structures and algorithms
     init_openssl();
@@ -264,8 +270,46 @@ int main(int argc, char **argv)
         else
 	  fprintf(stdout, "Server: Established SSL/TLS connection with client (%s)\n", client_addr);
 
-	// ************************************************************************
-	// NEW CODE HERE
+	// DOWNLOAD
+	// Receive RPC request and transfer the file
+  	bzero(buffer, BUFFER_SIZE);
+  	rcount = SSL_read(ssl, buffer, BUFFER_SIZE);
+
+  	// Check for invalid operation by comparing the first 9 chars to "download "
+  	if (strncmp(buffer, "download ", 9) != 0) {
+    	  sprintf(buffer, "rpcerror %d", ERR_INVALID_OP);
+    	  SSL_write(ssl, buffer, strlen(buffer) + 1);
+  	}
+
+  	// Check for too many parameters
+  	else if (sscanf(buffer, "download %s %s", filename, extra) == 2) {
+    	  sprintf(buffer, "rpcerror %d", ERR_TOO_MANY_ARGS);
+    	  SSL_write(ssl, buffer, strlen(buffer) + 1);
+  	}
+
+  	// Check for too few parameters
+  	else if (sscanf(buffer, "download %s", filename) != 1) {
+    	  sprintf(buffer, "rpcerror %d", ERR_TOO_FEW_ARGS);
+    	  SSL_write(ssl, buffer, strlen(buffer) + 1);
+  	}
+  
+  	// Check for the correct number of parameters
+  	else if (sscanf(buffer, "download %s", filename) == 1) {
+  	// Now check for a file error
+    	readfd = open(filename, O_RDONLY);
+    	if (readfd < 0) {
+      	  fprintf(stderr, "Server: Could not open file \"%s\": %s\n", filename, strerror(errno));
+      	  sprintf(buffer, "fileerror %d", errno);
+      	  SSL_write(ssl, buffer, strlen(buffer) + 1);
+    	}
+
+    // Passed all error checks, so transfer the file contents to the client
+    	else {
+      	do {
+          rcount = read(readfd, buffer, BUFFER_SIZE);
+          SSL_write(ssl, buffer, rcount);
+      	} while (rcount > 0);
+      	close(readfd);
 	// ************************************************************************
 
 	
@@ -284,4 +328,6 @@ int main(int argc, char **argv)
     close(sockfd);
 
     return 0;
+	}
+    }
 }
